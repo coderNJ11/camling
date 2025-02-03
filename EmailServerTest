@@ -1,0 +1,14 @@
+   import com.icegreen.greenmail.util.GreenMail;
+   import com.icegreen.greenmail.util.ServerSetup;
+
+   public class EmailServerTest {
+
+       @Test
+       public emailServerTest() throws Exception {
+           ServerSetup setup = new ServerSetup(3025, "localhost", "smtp");
+           GreenMail greenMail = new GreenMail(setup);
+           greenMail.start();
+
+           System.out.println("SMTP server started on localhost:3025");
+       }
+   }

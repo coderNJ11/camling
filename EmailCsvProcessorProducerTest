@@ -1,0 +1,91 @@
+package org.component;
+
+import org.apache.camel.Exchange;
+import org.apache.camel.attachment.DefaultAttachment;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.camel.support.DefaultExchange;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import javax.activation.DataHandler;
+import javax.activation.FileDataSource;
+import java.io.File;
+import java.util.Date;
+import java.util.Map;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+public class EmailCsvProcessorProducerTest {
+
+    private EmailCsvProcessorProducer emailCsvProcessorProducer;
+    private DefaultCamelContext camelContext;
+    private Exchange exchange;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        // Create Camel context and exchange for testing
+        camelContext = new DefaultCamelContext();
+        exchange = new DefaultExchange(camelContext);
+
+        // Initialize the EmailCsvProcessorProducer
+        EmailCsvProcessorEndpoint endpoint = new EmailCsvProcessorEndpoint("", camelContext.getEndpoint(""));
+        emailCsvProcessorProducer = new EmailCsvProcessorProducer(endpoint);
+    }
+
+    @Test
+    void testValidEmailWithCsvAttachment() throws Exception {
+        // Set up email headers
+        exchange.getIn().setHeader("From", "John Doe <john.doe@example.com>");
+        exchange.getIn().setHeader("Subject", "Company X");
+        exchange.getIn().setHeader("CamelMailMessageReceivedDate", new Date());
+
+        // Attach a valid CSV file
+        File csvFile = new File("src/test/resources/test-data.csv");
+        DefaultAttachment attachment = new DefaultAttachment(new DataHandler(new FileDataSource(csvFile)));
+        exchange.getIn(AttachmentMessage.class).addAttachment("sample.csv", attachment);
+
+        // Call the producer
+        emailCsvProcessorProducer.process(exchange);
+
+        // Validate exchange output
+        Map<String, Object> jsonResponse = exchange.getIn().getBody(Map.class);
+        assertNotNull(jsonResponse, "The JSON response should not be null");
+
+        // Validate JSON response contents
+        assertEquals("John Doe", ((Map<?, ?>) jsonResponse.get("data")).get("requester_name"));
+        assertEquals("john.doe@example.com", ((Map<?, ?>) jsonResponse.get("data")).get("requester_email"));
+    }
+
+    @Test
+    void testInvalidEmailThrowsError() throws Exception {
+        // Set up invalid email header
+        exchange.getIn().setHeader("From", "Invalid Email");
+        exchange.getIn().setHeader("Subject", "Company X");
+        exchange.getIn().setHeader("CamelMailMessageReceivedDate", new Date());
+
+        // Call the producer
+        emailCsvProcessorProducer.process(exchange);
+
+        // Validate that an error was set
+        String errorReason = exchange.getIn().getHeader("ErrorReason", String.class);
+        assertNotNull(errorReason, "Error reason should be set");
+        assertEquals("Invalid or missing email address!", errorReason);
+    }
+
+    @Test
+    void testMissingCsvAttachmentThrowsError() throws Exception {
+        // Set up valid email headers
+        exchange.getIn().setHeader("From", "John Doe <john.doe@example.com>");
+        exchange.getIn().setHeader("Subject", "Company X");
+        exchange.getIn().setHeader("CamelMailMessageReceivedDate", new Date());
+
+        // Call the producer
+        emailCsvProcessorProducer.process(exchange);
+
+        // Validate that an error was set
+        String errorReason = exchange.getIn().getHeader("ErrorReason", String.class);
+        assertNotNull(errorReason, "Error reason should be set");
+        assertEquals("Please attach a csv file", errorReason);
+    }
+}
