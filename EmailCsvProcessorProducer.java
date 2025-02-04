@@ -1,5 +1,6 @@
 package org.component;
 
+
 import org.apache.camel.Exchange;
 import org.apache.camel.Message;
 import org.apache.camel.attachment.AttachmentMessage;
@@ -7,21 +8,25 @@ import org.apache.camel.support.DefaultProducer;
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvValidationException;
 
-import javax.activation.DataHandler;
+import jakarta.activation.DataHandler;
+import jakarta.mail.Multipart;
+import jakarta.mail.Part;
+import jakarta.mail.internet.MimeMultipart;
 import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.util.*;
 import java.util.regex.Pattern;
 
-public class EmailCsvProcessorProducer extends DefaultProducer {
+public class EmailCsvProcessProducer extends DefaultProducer {
 
-    public EmailCsvProcessorProducer(EmailCsvProcessorEndpoint endpoint) {
+    public EmailCsvProcessProducer(EmailCsvProcessorEndpoint endpoint) {
         super(endpoint);
     }
 
     @Override
     public void process(Exchange exchange) throws Exception {
         try {
-            // Get email details
+            // Get the email message from the Exchange
             Message mailMessage = exchange.getIn();
             if (mailMessage == null) {
                 setExchangeError(exchange, "No email found in the exchange!");
@@ -35,7 +40,7 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
                 return;
             }
 
-            // Extract additional email data
+            // Extract additional email metadata
             String subject = (String) mailMessage.getHeader("Subject");
             Date receivedDate = (Date) mailMessage.getHeader("CamelMailMessageReceivedDate");
 
@@ -48,62 +53,82 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
             String senderName = parseSenderName(senderEmail);
             String companyName = parseCompanyName(subject);
 
-            // Format receivedDate as "yyyy-MM-dd HH:mm:ss" for "createOn" field
+            // Format receivedDate as "yyyy-MM-dd HH:mm:ss" for the "createOn" field
             String createOn = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(receivedDate);
 
-            // Collect all CSV data into leave_details
+            // Collect CSV data into `leaveDetails`
             List<Map<String, Object>> leaveDetails = new ArrayList<>();
             boolean csvFileFound = false;
 
+            // Check if the email is an AttachmentMessage
             if (mailMessage instanceof AttachmentMessage) {
                 AttachmentMessage attachmentMessage = (AttachmentMessage) mailMessage;
                 Map<String, DataHandler> attachments = attachmentMessage.getAttachments();
 
                 // Process attachments
                 for (Map.Entry<String, DataHandler> attachmentEntry : attachments.entrySet()) {
-                    DataHandler dh = attachmentEntry.getValue();
-                    String fileName = dh.getName();
+                    DataHandler dataHandler = attachmentEntry.getValue();
+                    String fileName = dataHandler.getName();
 
                     if (fileName.toLowerCase().endsWith(".csv")) {
                         csvFileFound = true;
-                        try (InputStreamReader reader = new InputStreamReader(dh.getInputStream())) {
+                        try (InputStreamReader reader = new InputStreamReader(dataHandler.getInputStream())) {
                             leaveDetails.addAll(parseCsvToLeaveDetails(reader));
                         } catch (RuntimeException e) {
-                            setExchangeError(exchange, "Please attach a valid csv file: " + e.getMessage());
+                            setExchangeError(exchange, "Please attach a valid CSV file: " + e.getMessage());
+                            return;
+                        }
+                    }
+                }
+            }
+            // Otherwise, check if it's a MimeMultipart message
+            else if (mailMessage.getBody() instanceof MimeMultipart) {
+                MimeMultipart multipart = (MimeMultipart) mailMessage.getBody();
+
+                for (int i = 0; i < multipart.getCount(); i++) {
+                    Part part = multipart.getBodyPart(i);
+
+                    // Check if the part is a CSV attachment
+                    if (Part.ATTACHMENT.equalsIgnoreCase(part.getDisposition()) && part.getFileName().toLowerCase().endsWith(".csv")) {
+                        csvFileFound = true;
+                        try (InputStream inputStream = part.getInputStream();
+                             InputStreamReader reader = new InputStreamReader(inputStream)) {
+                            leaveDetails.addAll(parseCsvToLeaveDetails(reader));
+                        } catch (RuntimeException e) {
+                            setExchangeError(exchange, "Please attach a valid CSV file: " + e.getMessage());
                             return;
                         }
                     }
                 }
             }
 
+            // Check for missing or empty CSV data
             if (!csvFileFound) {
-                setExchangeError(exchange, "Please attach a csv file");
+                setExchangeError(exchange, "Please attach a CSV file.");
                 return;
             }
 
             if (leaveDetails.isEmpty()) {
-                setExchangeError(exchange, "CSV file format is correct but values are missing");
+                setExchangeError(exchange, "CSV file format is correct, but values are missing.");
                 return;
             }
 
-            // Build the complete JSON response
+            // Build and set the complete JSON response as the output
             Map<String, Object> jsonResponse = buildJsonResponse(senderName, senderEmail, companyName, createOn, leaveDetails);
-
-            // Set the JSON object as the Exchange body
             exchange.getIn().setBody(jsonResponse);
         } catch (Exception e) {
-            // Capture any unexpected exceptions
+            // Capture unexpected exceptions
             setExchangeError(exchange, "An unexpected error occurred: " + e.getMessage());
         }
     }
 
     /**
-     * Helper method to set the error message in the Exchange.
+     * Helper method to set the error details in the Exchange.
      */
     private void setExchangeError(Exchange exchange, String errorMessage) {
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, errorMessage);
         exchange.getIn().setHeader("ErrorReason", errorMessage);
-        exchange.getIn().setBody(null); // Clear the body since there is an error
+        exchange.getIn().setBody(null); // Clear the body since an error occurred
     }
 
     /**
@@ -126,12 +151,12 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
             String[] row;
             while ((row = csvReader.readNext()) != null) {
                 if (row.length != headers.length) {
-                    throw new RuntimeException("CSV file format is correct but values are missing");
+                    throw new RuntimeException("CSV row data is missing values.");
                 }
 
                 for (String value : row) {
                     if (value == null || value.trim().isEmpty()) {
-                        throw new RuntimeException("CSV file format is correct but values are missing");
+                        throw new RuntimeException("CSV file format is correct, but values are missing.");
                     }
                 }
 
@@ -172,7 +197,7 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
     }
 
     /**
-     * Parse the sender's name from the "From" email header.
+     * Extract the sender's name from the "From" email header.
      */
     private String parseSenderName(String senderEmail) {
         if (senderEmail.contains("<")) {
@@ -202,43 +227,27 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
         String[] names = fullName.split(" ");
         return names.length > 1 ? names[names.length - 1] : "";
     }
+
     /**
      * Build the JSON response according to the desired structure.
-     *
-     * @param senderName   The name of the email sender (from email metadata)
-     * @param senderEmail  The email of the sender (from email metadata)
-     * @param companyName  Extracted company name from the email subject
-     * @param createOn     The formatted creation date (email received date)
-     * @param leaveDetails The list of leave details parsed from the CSV
-     * @return A map representing the JSON response
      */
     private Map<String, Object> buildJsonResponse(String senderName, String senderEmail, String companyName, String createOn, List<Map<String, Object>> leaveDetails) {
-        // Build the `data` node for the JSON
         Map<String, Object> data = new HashMap<>();
-        data.put("requester_name", senderName);              // Fill in the sender's name
-        data.put("requester_email", senderEmail);            // Fill in the sender's email
-        data.put("requesterCompany", companyName);           // Fill in the company from the email subject
-        data.put("createOn", createOn);                      // Fill in the creation date
-        data.put("leave_details", leaveDetails);             // Populate leave details parsed from CSV
-        data.put("_formio_formId", "123123123131dafwefw21e1eac"); // Example form ID (can be dynamic if needed)
-        data.put("_formio_submissionId", "");                // Keep submission ID empty for now
-        data.put("submit", true);                            // Indicate that the form is marked as submitted
+        data.put("requester_name", senderName);
+        data.put("requester_email", senderEmail);
+        data.put("requesterCompany", companyName);
+        data.put("createOn", createOn);
+        data.put("leave_details", leaveDetails);
 
-        // Build the `metadata` node for the JSON
         Map<String, Object> metadata = new HashMap<>();
-        metadata.put("timezone", "UTC");                     // Set timezone
-        metadata.put("browserName", "Chrome");               // Set default browser for reference, if applicable
-        metadata.put("userAgent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/237.84.2.178 Safari/537.36");
+        metadata.put("timezone", "UTC");
+        metadata.put("browserName", "Chrome");
 
-        // Top-level JSON structure
         Map<String, Object> jsonResponse = new HashMap<>();
-        jsonResponse.put("data", data);                      // Add data node
-        jsonResponse.put("metadata", metadata);              // Add metadata node
-        jsonResponse.put("state", "submitted");              // Mark the state as submitted
-        jsonResponse.put("_vnote", "");                      // Keep vnote empty unless required
-        jsonResponse.put("action", "CREATE");                // Use CREATE as default action for record creation
-        jsonResponse.put("uploadedFiles", Collections.emptyList()); // No uploaded files in this use case
+        jsonResponse.put("data", data);
+        jsonResponse.put("metadata", metadata);
+        jsonResponse.put("state", "submitted");
 
-        return jsonResponse;                                 // Return the complete JSON structure map
+        return jsonResponse;
     }
 }
