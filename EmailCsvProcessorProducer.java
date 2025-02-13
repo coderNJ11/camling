@@ -8,7 +8,11 @@ import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvValidationException;
 
 import jakarta.activation.DataHandler;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+
 import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.util.*;
 import java.util.regex.Pattern;
 
@@ -47,7 +51,7 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
             String createOn = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(receivedDate);
 
             List<Map<String, Object>> leaveDetails = new ArrayList<>();
-            boolean csvFileFound = false;
+            boolean validFileFound = false;
 
             if (mailMessage instanceof AttachmentMessage) {
                 AttachmentMessage attachmentMessage = (AttachmentMessage) mailMessage;
@@ -58,24 +62,32 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
                     String fileName = dh.getName();
 
                     if (fileName.toLowerCase().endsWith(".csv")) {
-                        csvFileFound = true;
+                        validFileFound = true;
                         try (InputStreamReader reader = new InputStreamReader(dh.getInputStream())) {
                             leaveDetails.addAll(parseCsvToLeaveDetails(reader));
                         } catch (RuntimeException e) {
-                            setExchangeError(exchange, "Please attach a valid csv file: " + e.getMessage());
+                            setExchangeError(exchange, "Please attach a valid CSV file: " + e.getMessage());
+                            return;
+                        }
+                    } else if (fileName.toLowerCase().endsWith(".xlsx")) {
+                        validFileFound = true;
+                        try (InputStream inputStream = dh.getInputStream()) {
+                            leaveDetails.addAll(parseXlsxToLeaveDetails(inputStream));
+                        } catch (RuntimeException e) {
+                            setExchangeError(exchange, "Please attach a valid XLSX file: " + e.getMessage());
                             return;
                         }
                     }
                 }
             }
 
-            if (!csvFileFound) {
-                setExchangeError(exchange, "Please attach a csv file");
+            if (!validFileFound) {
+                setExchangeError(exchange, "Please attach a CSV or XLSX file");
                 return;
             }
 
             if (leaveDetails.isEmpty()) {
-                setExchangeError(exchange, "CSV file format is correct but values are missing");
+                setExchangeError(exchange, "File format is correct but values are missing");
                 return;
             }
 
@@ -99,7 +111,6 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
 
         try {
             String[] headers = csvReader.readNext();
-
             String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
             if (!Arrays.equals(headers, expectedHeaders)) {
                 throw new RuntimeException("Invalid CSV header format!");
@@ -117,19 +128,7 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
                     }
                 }
 
-                Map<String, Object> leaveDetail = new HashMap<>();
-                leaveDetail.put("_id", Integer.parseInt(row[0]));
-                leaveDetail.put("manager", row[2]);
-                leaveDetail.put("start_date", row[3] + "T00:00:00");
-                leaveDetail.put("end_date", row[4] + "T00:00:00");
-                leaveDetail.put("display_name", row[1]);
-                leaveDetail.put("first_name", getFirstName(row[1]));
-                leaveDetail.put("last_name", getLastName(row[1]));
-                leaveDetail.put("name", row[1]);
-                leaveDetail.put("email", "example@example.com");
-                leaveDetail.put("no_of_hours", Integer.parseInt(row[5]));
-
-                leaveDetails.add(leaveDetail);
+                leaveDetails.add(createLeaveDetail(row));
             }
         } catch (CsvValidationException e) {
             throw new RuntimeException("Error processing CSV file!", e);
@@ -137,6 +136,56 @@ public class EmailCsvProcessorProducer extends DefaultProducer {
             csvReader.close();
         }
         return leaveDetails;
+    }
+
+    private List<Map<String, Object>> parseXlsxToLeaveDetails(InputStream inputStream) throws Exception {
+        List<Map<String, Object>> leaveDetails = new ArrayList<>();
+        try (Workbook workbook = new XSSFWorkbook(inputStream)) {
+            Sheet sheet = workbook.getSheetAt(0);
+            Iterator<Row> rowIterator = sheet.iterator();
+            if (!rowIterator.hasNext()) {
+                throw new RuntimeException("Invalid XLSX header format!");
+            }
+
+            Row headerRow = rowIterator.next();
+            String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
+            String[] headers = new String[expectedHeaders.length];
+            for (int i = 0; i < headers.length; i++) {
+                headers[i] = headerRow.getCell(i).getStringCellValue();
+            }
+            if (!Arrays.equals(headers, expectedHeaders)) {
+                throw new RuntimeException("Invalid XLSX header format!");
+            }
+
+            while (rowIterator.hasNext()) {
+                Row row = rowIterator.next();
+                String[] rowData = new String[expectedHeaders.length];
+                for (int i = 0; i < rowData.length; i++) {
+                    Cell cell = row.getCell(i);
+                    if (cell == null || cell.getCellType() == CellType.BLANK) {
+                        throw new RuntimeException("XLSX file format is correct but values are missing");
+                    }
+                    rowData[i] = cell.toString();
+                }
+                leaveDetails.add(createLeaveDetail(rowData));
+            }
+        }
+        return leaveDetails;
+    }
+
+    private Map<String, Object> createLeaveDetail(String[] row) {
+        Map<String, Object> leaveDetail = new HashMap<>();
+        leaveDetail.put("_id", Integer.parseInt(row[0]));
+        leaveDetail.put("manager", row[2]);
+        leaveDetail.put("start_date", row[3] + "T00:00:00");
+        leaveDetail.put("end_date", row[4] + "T00:00:00");
+        leaveDetail.put("display_name", row[1]);
+        leaveDetail.put("first_name", getFirstName(row[1]));
+        leaveDetail.put("last_name", getLastName(row[1]));
+        leaveDetail.put("name", row[1]);
+        leaveDetail.put("email", "example@example.com");
+        leaveDetail.put("no_of_hours", Integer.parseInt(row[5]));
+        return leaveDetail;
     }
 
     private boolean isValidEmail(String email) {
