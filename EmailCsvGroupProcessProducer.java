@@ -6,7 +6,6 @@ import org.apache.camel.attachment.AttachmentMessage;
 import org.apache.camel.support.DefaultProducer;
 import com.opencsv.CSVReader;
 import com.opencsv.CSVReaderBuilder;
-import com.opencsv.exceptions.CsvValidationException;
 import jakarta.activation.DataHandler;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
@@ -63,7 +62,8 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
 
                     if (fileName.toLowerCase().endsWith(".csv")) {
                         validFileFound = true;
-                        try (InputStreamReader reader = fixEncoding(new InputStreamReader(dh.getInputStream(), detectEncoding(dh.getInputStream())))) {
+                        try (InputStream normalizedInputStream = normalizeEOL(dh.getInputStream());
+                             InputStreamReader reader = fixEncoding(new InputStreamReader(normalizedInputStream, detectEncoding(normalizedInputStream)))) {
                             leaveDetails.addAll(parseCsvToLeaveDetails(reader));
                         } catch (RuntimeException e) {
                             setExchangeError(exchange, "Invalid CSV file: " + e.getMessage());
@@ -109,6 +109,21 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
         } catch (Exception e) {
             setExchangeError(exchange, "An unexpected error occurred: " + e.getMessage());
         }
+    }
+
+    // Method to normalize EOL characters (handles CR, LF, CRLF)
+    private InputStream normalizeEOL(InputStream inputStream) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
+             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(buffer, StandardCharsets.UTF_8))) {
+
+            String line;
+            while ((line = reader.readLine()) != null) {
+                writer.write(line);
+                writer.write("\n"); // Normalize all EOL to LF
+            }
+        }
+        return new ByteArrayInputStream(buffer.toByteArray());
     }
 
     private Charset detectEncoding(InputStream inputStream) {
@@ -182,6 +197,7 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
         }
         return leaveDetails;
     }
+
 
     private Map<String, List<Map<String, Object>>> groupLeaveDetailsByManager(List<Map<String, Object>> leaveDetails) {
         Map<String, List<Map<String, Object>>> groupedByManager = new HashMap<>();
