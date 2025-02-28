@@ -1,22 +1,21 @@
 package org.component;
 
-
 import org.apache.camel.Exchange;
 import org.apache.camel.Message;
 import org.apache.camel.attachment.AttachmentMessage;
 import org.apache.camel.support.DefaultProducer;
 import com.opencsv.CSVReader;
+import com.opencsv.CSVReaderBuilder;
 import com.opencsv.exceptions.CsvValidationException;
-
 import jakarta.activation.DataHandler;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.regex.Pattern;
 
 public class EmailCsvGroupProcessProducer extends DefaultProducer {
 
@@ -27,21 +26,18 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
     @Override
     public void process(Exchange exchange) throws Exception {
         try {
-            // Get email details
             Message mailMessage = exchange.getIn();
             if (mailMessage == null) {
                 setExchangeError(exchange, "No email found in the exchange!");
                 return;
             }
 
-            // Validate email address
             String senderEmail = (String) mailMessage.getHeader("From");
             if (!isValidEmail(senderEmail)) {
                 setExchangeError(exchange, "Invalid or missing email address!");
                 return;
             }
 
-            // Extract additional email data
             String subject = (String) mailMessage.getHeader("Subject");
             Date receivedDate = (Date) mailMessage.getHeader("CamelMailMessageReceivedDate");
 
@@ -50,14 +46,10 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
                 return;
             }
 
-            // Parse sender's name and company name
             String senderName = parseSenderName(senderEmail);
             String companyName = parseCompanyName(subject);
-
-            // Format receivedDate as "yyyy-MM-dd HH:mm:ss" for "createOn" field
             String createOn = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(receivedDate);
 
-            // Collect all CSV and XLSX data into leave_details
             List<Map<String, Object>> leaveDetails = new ArrayList<>();
             boolean validFileFound = false;
 
@@ -65,14 +57,13 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
                 AttachmentMessage attachmentMessage = (AttachmentMessage) mailMessage;
                 Map<String, DataHandler> attachments = attachmentMessage.getAttachments();
 
-                // Process attachments
                 for (Map.Entry<String, DataHandler> attachmentEntry : attachments.entrySet()) {
                     DataHandler dh = attachmentEntry.getValue();
                     String fileName = dh.getName();
 
                     if (fileName.toLowerCase().endsWith(".csv")) {
                         validFileFound = true;
-                        try (InputStreamReader reader = new InputStreamReader(dh.getInputStream())) {
+                        try (InputStreamReader reader = fixEncoding(new InputStreamReader(dh.getInputStream(), detectEncoding(dh.getInputStream())))) {
                             leaveDetails.addAll(parseCsvToLeaveDetails(reader));
                         } catch (RuntimeException e) {
                             setExchangeError(exchange, "Invalid CSV file: " + e.getMessage());
@@ -100,78 +91,85 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
                 return;
             }
 
-            // Group leave details by manager
             Map<String, List<Map<String, Object>>> groupedByManager = groupLeaveDetailsByManager(leaveDetails);
-
-            // Build a list of JSON responses, one for each manager
             List<Map<String, Object>> jsonResponses = new ArrayList<>();
             for (Map.Entry<String, List<Map<String, Object>>> entry : groupedByManager.entrySet()) {
                 String managerName = entry.getKey();
                 List<Map<String, Object>> managerLeaveDetails = entry.getValue();
 
-                // Create a JSON response for the manager
                 Map<String, Object> jsonResponse = buildJsonResponse(
                         senderName, senderEmail, companyName, createOn, managerLeaveDetails
                 );
-                jsonResponse.put("manager_name", managerName); // Add manager name to the JSON response
+                jsonResponse.put("manager_name", managerName);
 
                 jsonResponses.add(jsonResponse);
             }
 
-            // Set the list of JSON responses as the Exchange body
             exchange.getIn().setBody(jsonResponses);
         } catch (Exception e) {
-            // Capture any unexpected exceptions
             setExchangeError(exchange, "An unexpected error occurred: " + e.getMessage());
         }
     }
 
-    /**
-     * Helper method to set the error message in the Exchange.
-     */
-    private void setExchangeError(Exchange exchange, String errorMessage) {
-        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, errorMessage);
-        exchange.getIn().setHeader("ErrorReason", errorMessage);
-        exchange.getIn().setBody(null); // Clear the body since there is an error
+    private Charset detectEncoding(InputStream inputStream) {
+        try (BufferedInputStream bufferedInputStream = new BufferedInputStream(inputStream)) {
+            bufferedInputStream.mark(4);
+            byte[] bom = new byte[4];
+            int read = bufferedInputStream.read(bom, 0, bom.length);
+            bufferedInputStream.reset();
+
+            if (read == 4) {
+                if ((bom[0] == (byte) 0xEF) && (bom[1] == (byte) 0xBB) && (bom[2] == (byte) 0xBF)) {
+                    return StandardCharsets.UTF_8;
+                } else if ((bom[0] == (byte) 0xFE) && (bom[1] == (byte) 0xFF)) {
+                    return StandardCharsets.UTF_16BE;
+                } else if ((bom[0] == (byte) 0xFF) && (bom[1] == (byte) 0xFE)) {
+                    return StandardCharsets.UTF_16LE;
+                }
+            }
+        } catch (IOException ignored) {}
+        return StandardCharsets.UTF_8;
     }
 
-    /**
-     * Parse the CSV file and convert it into a list of leave_details entries with validations.
-     */
+    private InputStreamReader fixEncoding(InputStreamReader reader) throws IOException {
+        BufferedReader bufferedReader = new BufferedReader(reader);
+        String firstLine = bufferedReader.readLine();
+        if (firstLine.charAt(0) == 0xFEFF) {
+            return new InputStreamReader(new ByteArrayInputStream(firstLine.substring(1).getBytes(StandardCharsets.UTF_8)));
+        }
+        return reader;
+    }
+
     private List<Map<String, Object>> parseCsvToLeaveDetails(InputStreamReader reader) throws Exception {
-        CSVReader csvReader = new CSVReader(reader);
         List<Map<String, Object>> leaveDetails = new ArrayList<>();
+        try (BufferedReader bufferedReader = new BufferedReader(reader)) {
+            CSVReader csvReader = new CSVReaderBuilder(bufferedReader)
+                    .withSkipLines(0)
+                    .build();
 
-        try {
             String[] headers = csvReader.readNext();
-
-            // Trim headers to handle extra spaces
-            for (int i = 0; i < headers.length; i++) {
-                headers[i] = headers[i].trim();
+            if (headers == null) {
+                throw new RuntimeException("CSV file is empty!");
             }
 
-            // Expected headers
+            headers = Arrays.stream(headers).map(String::trim).toArray(String[]::new);
             String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
             if (!Arrays.equals(headers, expectedHeaders)) {
                 throw new RuntimeException("Invalid CSV header format!");
             }
 
-            // Parse rows
             String[] row;
             while ((row = csvReader.readNext()) != null) {
-                for (int i = 0; i < row.length; i++) {
-                    row[i] = row[i].trim().replace("\"", ""); // Trim and remove quotes
-                }
-
+                row = Arrays.stream(row).map(String::trim).toArray(String[]::new);
                 if (row.length != headers.length) {
-                    throw new RuntimeException("CSV file format is correct but row data is incomplete.");
+                    throw new RuntimeException("CSV row data is incomplete.");
                 }
 
                 Map<String, Object> leaveDetail = new HashMap<>();
                 leaveDetail.put("_id", Integer.parseInt(row[0]));
                 leaveDetail.put("manager", row[2]);
-                leaveDetail.put("start_date", row[3] + "T00:00:00");
-                leaveDetail.put("end_date", row[4] + "T00:00:00");
+                leaveDetail.put("start_date", row[3]);
+                leaveDetail.put("end_date", row[4]);
                 leaveDetail.put("display_name", row[1]);
                 leaveDetail.put("first_name", getFirstName(row[1]));
                 leaveDetail.put("last_name", getLastName(row[1]));
@@ -181,27 +179,33 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
 
                 leaveDetails.add(leaveDetail);
             }
-        } catch (CsvValidationException e) {
-            throw new RuntimeException("Error processing CSV file!", e);
-        } finally {
-            csvReader.close();
         }
         return leaveDetails;
     }
 
-    /**
-     * Parse XLSX file into leave_details entries.
-     */
+    private Map<String, List<Map<String, Object>>> groupLeaveDetailsByManager(List<Map<String, Object>> leaveDetails) {
+        Map<String, List<Map<String, Object>>> groupedByManager = new HashMap<>();
+        for (Map<String, Object> leaveDetail : leaveDetails) {
+            String managerName = (String) leaveDetail.get("manager");
+            groupedByManager.computeIfAbsent(managerName, k -> new ArrayList<>()).add(leaveDetail);
+        }
+        return groupedByManager;
+    }
+
+    private void setExchangeError(Exchange exchange, String errorMessage) {
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, errorMessage);
+        exchange.getIn().setHeader("ErrorReason", errorMessage);
+        exchange.getIn().setBody(null);
+    }
+
     private List<Map<String, Object>> parseXlsxToLeaveDetails(InputStream inputStream) throws Exception {
         List<Map<String, Object>> leaveDetails = new ArrayList<>();
         Workbook workbook = new XSSFWorkbook(inputStream);
         Sheet sheet = workbook.getSheetAt(0);
 
-        // Iterate rows
         Iterator<Row> rowIterator = sheet.rowIterator();
-        Row headerRow = rowIterator.next(); // First row is header
+        Row headerRow = rowIterator.next();
 
-        // Validate headers
         String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
         for (int i = 0; i < expectedHeaders.length; i++) {
             String headerCell = headerRow.getCell(i).getStringCellValue().trim();
@@ -210,7 +214,6 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
             }
         }
 
-        // Parse rows
         while (rowIterator.hasNext()) {
             Row row = rowIterator.next();
             Map<String, Object> leaveDetail = new HashMap<>();
@@ -232,21 +235,6 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
         return leaveDetails;
     }
 
-    /**
-     * Group leave details by manager's name.
-     */
-    private Map<String, List<Map<String, Object>>> groupLeaveDetailsByManager(List<Map<String, Object>> leaveDetails) {
-        Map<String, List<Map<String, Object>>> groupedByManager = new HashMap<>();
-        for (Map<String, Object> leaveDetail : leaveDetails) {
-            String managerName = (String) leaveDetail.get("manager");
-            groupedByManager.computeIfAbsent(managerName, k -> new ArrayList<>()).add(leaveDetail);
-        }
-        return groupedByManager;
-    }
-
-    /**
-     * Build a JSON response with leave details.
-     */
     private Map<String, Object> buildJsonResponse(String senderName, String senderEmail, String companyName, String createOn, List<Map<String, Object>> leaveDetails) {
         Map<String, Object> data = new HashMap<>();
         data.put("requester_name", senderName);
