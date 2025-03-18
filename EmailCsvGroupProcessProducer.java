@@ -13,14 +13,25 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.time.LocalDate;
+import java.time.Month;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 public class EmailCsvGroupProcessProducer extends DefaultProducer {
+    private static final int MAX_EMAILS_PER_MONTH = 4; // Maximum emails per sender per month
+    private static final int HOURS_PER_DAY = 8; // 1 Day = 8 Hours
+
+    // Map to track email counts per sender
+    // Key: sender email + monthly key ("yyyy-MM"), Value: email count for the month
+    private final Map<String, Integer> emailCountsPerSender = new HashMap<>();
 
     public EmailCsvGroupProcessProducer(EmailCsvProcessorEndpoint endpoint) {
         super(endpoint);
     }
 
+    @Override
     public void process(Exchange exchange) {
         try {
             Message mailMessage = exchange.getIn();
@@ -43,9 +54,18 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
                 return;
             }
 
-            String senderName = parseSenderName(senderEmail);
-            String companyName = parseCompanyName(subject);
-            String createOn = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(receivedDate);
+            LocalDate currentDate = LocalDate.now();
+            int dayOfMonth = currentDate.getDayOfMonth();
+            if (dayOfMonth <= 20) {
+                setExchangeError(exchange, "Emails can only be sent in the last 10 days of the calendar month.");
+                return;
+            }
+
+            // Validate and update sender's monthly email count
+            if (!isSenderAllowedToSendEmail(senderEmail, currentDate)) {
+                setExchangeError(exchange, "Sender is only allowed to send 4 emails per month.");
+                return;
+            }
 
             List<Map<String, Object>> leaveDetails = new ArrayList<>();
             boolean validFileFound = false;
@@ -61,22 +81,12 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
                     if (fileName.toLowerCase().endsWith(".csv")) {
                         validFileFound = true;
                         try (InputStream attachmentInputStream = dh.getInputStream()) {
-                            // Normalize EOL and encoding in one step
                             InputStream normalizedInputStream = normalizeEOLAndEncoding(attachmentInputStream);
-
                             try (InputStreamReader reader = new InputStreamReader(normalizedInputStream, StandardCharsets.UTF_8)) {
-                                leaveDetails.addAll(parseCsvToLeaveDetails(reader));
+                                leaveDetails.addAll(parseCsvToLeaveDetails(reader, currentDate));
                             }
                         } catch (Exception e) {
                             setExchangeError(exchange, "Invalid CSV file: " + e.getMessage());
-                            return;
-                        }
-                    } else if (fileName.toLowerCase().endsWith(".xlsx")) {
-                        validFileFound = true;
-                        try (InputStream attachmentInputStream = dh.getInputStream()) {
-                            leaveDetails.addAll(parseXlsxToLeaveDetails(attachmentInputStream));
-                        } catch (Exception e) {
-                            setExchangeError(exchange, "Invalid XLSX file: " + e.getMessage());
                             return;
                         }
                     }
@@ -84,7 +94,7 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
             }
 
             if (!validFileFound) {
-                setExchangeError(exchange, "Please attach a CSV or XLSX file.");
+                setExchangeError(exchange, "Please attach a valid CSV file.");
                 return;
             }
 
@@ -99,154 +109,128 @@ public class EmailCsvGroupProcessProducer extends DefaultProducer {
         }
     }
 
-    // Normalizes EOL and fixes encoding, combining two steps
     private InputStream normalizeEOLAndEncoding(InputStream inputStream) throws IOException {
-        // Read the entire input into a String
         String content = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
-
-        // Normalize line endings:
-        // - Convert CRLF (\r\n) to LF (\n)
-        content = content.replace("\r\n", "\n");
-
-        // - Convert CR (\r) to LF (\n)
-        content = content.replace("\r", "\n");
-
-        // Remove redundant blank lines (e.g., \n\n -> \n)
-        content = content.replaceAll("\n+", "\n");
-
-        // Return normalized InputStream
+        content = content.replace("\r\n", "\n").replace("\r", "\n").replaceAll("\n+", "\n");
         return new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8));
     }
 
-    // Parses CSV file content into leave details
-    private List<Map<String, Object>> parseCsvToLeaveDetails(InputStreamReader reader) throws Exception {
+    private List<Map<String, Object>> parseCsvToLeaveDetails(InputStreamReader reader, LocalDate currentDate) throws Exception {
         List<Map<String, Object>> leaveDetails = new ArrayList<>();
+        CSVReader csvReader = new CSVReaderBuilder(new BufferedReader(reader)).build();
 
-        try (BufferedReader bufferedReader = new BufferedReader(reader)) {
-            CSVReader csvReader = new CSVReaderBuilder(bufferedReader).build();
+        String[] headers = csvReader.readNext();
+        if (headers == null) {
+            throw new RuntimeException("CSV file is empty.");
+        }
 
-            // Read header row
-            String[] headers = csvReader.readNext();
-            if (headers == null || headers.length == 0) {
-                throw new RuntimeException("CSV file is empty or has no headers.");
+        String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours", "type"};
+        if (!Arrays.asList(headers).containsAll(Arrays.asList(expectedHeaders))) {
+            throw new RuntimeException("Invalid CSV format.");
+        }
+
+        String[] row;
+        while ((row = csvReader.readNext()) != null) {
+            row = Arrays.stream(row).map(String::trim).toArray(String[]::new);
+
+            if (Arrays.stream(row).allMatch(String::isBlank)) {
+                continue;
             }
 
-            // Trim and normalize headers
-            headers = Arrays.stream(headers)
-                    .map(String::trim)
-                    .filter(header -> header != null && !header.isEmpty()) // Ignore unnamed or empty columns
-                    .toArray(String[]::new);
-
-            // Validate headers against expected format
-            String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
-            if (headers.length < expectedHeaders.length || !Arrays.asList(headers).containsAll(Arrays.asList(expectedHeaders))) {
-                throw new RuntimeException("Invalid or unexpected CSV header format: " + Arrays.toString(headers));
-            }
-
-            String[] row;
-            while ((row = csvReader.readNext()) != null) {
-                // Trim each row and skip blank rows
-                row = Arrays.stream(row).map(String::trim).toArray(String[]::new);
-
-                if (Arrays.stream(row).allMatch(String::isBlank)) {
-                    continue; // Skip empty rows
-                }
-
-                // Map valid row data to the expected structure
-                Map<String, Object> leaveDetail = mapRowToLeaveDetails(row);
-                leaveDetails.add(leaveDetail);
-            }
+            Map<String, Object> detail = validateAndMapRow(row, currentDate);
+            leaveDetails.add(detail);
         }
 
         return leaveDetails;
     }
 
-    // Parses XLSX file content into leave details
-    private List<Map<String, Object>> parseXlsxToLeaveDetails(InputStream inputStream) throws Exception {
-        List<Map<String, Object>> leaveDetails = new ArrayList<>();
+    private Map<String, Object> validateAndMapRow(String[] row, LocalDate currentDate) {
+        DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
 
-        try (Workbook workbook = new XSSFWorkbook(inputStream)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            Iterator<Row> rowIterator = sheet.iterator();
+        LocalDate startDate = LocalDate.parse(row[3], dateFormatter);
+        LocalDate endDate = LocalDate.parse(row[4], dateFormatter);
 
-            String[] headers = null;
-            if (rowIterator.hasNext()) {
-                Row headerRow = rowIterator.next();
-                headers = Arrays.stream(parseXlsxRow(headerRow))
-                        .filter(header -> header != null && !header.isEmpty()) // Skip empty headers
-                        .toArray(String[]::new);
-            }
+        if (startDate.getMonthValue() != currentDate.getMonthValue() || startDate.getYear() != currentDate.getYear() ||
+                endDate.getMonthValue() != currentDate.getMonthValue() || endDate.getYear() != currentDate.getYear()) {
+            throw new IllegalArgumentException("start_date and end_date must be in the current calendar month.");
+        }
 
-            if (headers == null || headers.length == 0) {
-                throw new RuntimeException("XLSX file is empty or has no headers.");
-            }
+        if (!endDate.isAfter(startDate) && !endDate.isEqual(startDate)) {
+            throw new IllegalArgumentException("end_date must be after or equal to start_date.");
+        }
 
-            String[] expectedHeaders = {"employee_id", "employee_name", "manager", "start_date", "end_date", "no_of_hours"};
-            if (headers.length < expectedHeaders.length || !Arrays.asList(headers).containsAll(Arrays.asList(expectedHeaders))) {
-                throw new RuntimeException("Invalid XLSX header format: " + Arrays.toString(headers));
-            }
+        String noOfHours = row[5];
+        int totalHours = parseHours(noOfHours);
 
-            while (rowIterator.hasNext()) {
-                Row row = rowIterator.next();
-                String[] rowData = parseXlsxRow(row);
-                if (rowData != null && rowData.length >= expectedHeaders.length) {
-                    Map<String, Object> leaveDetail = mapRowToLeaveDetails(rowData);
-                    leaveDetails.add(leaveDetail);
-                }
+        if (totalHours < HOURS_PER_DAY && !endDate.isEqual(startDate)) {
+            throw new IllegalArgumentException("For less than 8 hours, start_date and end_date must be the same.");
+        }
+
+        if (totalHours > HOURS_PER_DAY) {
+            long dayDifference = ChronoUnit.DAYS.between(startDate, endDate) + 1;
+            if (dayDifference < 1) {
+                throw new IllegalArgumentException("For more than 8 hours, start_date and end_date must span at least 1 day.");
             }
         }
 
-        return leaveDetails;
-    }
-
-    private Map<String, Object> mapRowToLeaveDetails(String[] row) {
         Map<String, Object> leaveDetail = new HashMap<>();
         leaveDetail.put("employee_id", Long.parseLong(row[0]));
         leaveDetail.put("employee_name", row[1]);
         leaveDetail.put("manager", row[2]);
-        leaveDetail.put("start_date", row[3]);
-        leaveDetail.put("end_date", row[4]);
-        leaveDetail.put("no_of_hours", Integer.parseInt(row[5]));
+        leaveDetail.put("start_date", startDate.format(dateFormatter));
+        leaveDetail.put("end_date", endDate.format(dateFormatter));
+        leaveDetail.put("no_of_hours", formatHours(totalHours));
+        leaveDetail.put("type", row[6]);
+
         return leaveDetail;
     }
 
-    private String[] parseXlsxRow(Row row) {
-        List<String> values = new ArrayList<>();
-        for (Cell cell : row) {
-            switch (cell.getCellType()) {
-                case STRING:
-                    values.add(cell.getStringCellValue());
-                    break;
-                case NUMERIC:
-                    if (DateUtil.isCellDateFormatted(cell)) {
-                        values.add(cell.getDateCellValue().toString());
-                    } else {
-                        values.add(String.valueOf((long) cell.getNumericCellValue()));
-                    }
-                    break;
-                case BLANK:
-                    values.add("");
-                    break;
-                default:
-                    values.add(cell.toString());
+    private String getMonthlyKey(String senderEmail, LocalDate currentDate) {
+        return senderEmail + "-" + currentDate.getYear() + "-" + currentDate.getMonthValue();
+    }
+
+    private boolean isSenderAllowedToSendEmail(String senderEmail, LocalDate currentDate) {
+        String monthlyKey = getMonthlyKey(senderEmail, currentDate);
+        emailCountsPerSender.putIfAbsent(monthlyKey, 0); // Reset count if this is the first email of the month
+        int emailCount = emailCountsPerSender.get(monthlyKey);
+
+        if (emailCount >= MAX_EMAILS_PER_MONTH) {
+            return false; // Sender exceeded the limit for the month
+        }
+
+        // Increment the count and persist it
+        emailCountsPerSender.put(monthlyKey, emailCount + 1);
+        return true;
+    }
+
+    private int parseHours(String noOfHours) {
+        int totalHours = 0;
+
+        if (noOfHours.contains("D") || noOfHours.contains("H")) {
+            String[] parts = noOfHours.split("D|H");
+            if (noOfHours.contains("D")) {
+                totalHours += Integer.parseInt(parts[0]) * HOURS_PER_DAY;
+            }
+            if (noOfHours.contains("H")) {
+                totalHours += Integer.parseInt(parts[1]);
             }
         }
-        return values.toArray(new String[0]);
+
+        return totalHours;
+    }
+
+    private String formatHours(int totalHours) {
+        int days = totalHours / HOURS_PER_DAY;
+        int hours = totalHours % HOURS_PER_DAY;
+        return (days > 0 ? days + "D" : "") + (hours > 0 ? hours + "H" : "");
     }
 
     private boolean isValidEmail(String email) {
         return email != null && email.contains("@");
     }
 
-    private String parseSenderName(String email) {
-        return email.split("@")[0];
-    }
-
-    private String parseCompanyName(String subject) {
-        return subject;
-    }
-
     private void setExchangeError(Exchange exchange, String errorMessage) {
+        exchange.setException(new Exception(errorMessage));
         System.err.println(errorMessage);
     }
 }
