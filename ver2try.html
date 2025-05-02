@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Verification Email</title>
+    <style>
+        /* Style for the buttons */
+        .button {
+            display: inline-block;
+            padding: 10px 20px;
+            margin: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            text-decoration: none;
+            color: #fff;
+            border-radius: 5px;
+        }
+
+        .approve-button {
+            background-color: #4CAF50; /* Green for approve */
+        }
+
+        .reject-button {
+            background-color: #f44336; /* Red for reject */
+        }
+
+        .button:hover {
+            opacity: 0.9;
+        }
+
+        .container {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            text-align: center;
+            margin: 20px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h2>Request</h2>
+    <p>Please review and respond to the request with ID <strong>{id}</strong>.</p>
+
+    <!-- Approve Button -->
+    <a href="mailto:sender@example.com?subject=Approve%20{id}&body=Your%20verification%20request%20with%20ID%20{id}%20has%20been%20approved.%0A%0A---%0AThis%20is%20to%20confirm%20approval%20for%20the%20request."
+       class="button approve-button">
+        Approve
+    </a>
+
+    <!-- Reject Button -->
+    <a href="mailto:sender@example.com?subject=Reject%20{id}&body=Your%20verification%20request%20with%20ID%20{id}%20has%20been%20rejected.%0A%0A---%0AThis%20is%20to%20confirm%20rejection%20for%20the%20request."
+       class="button reject-button">
+        Reject
+    </a>
+</div>
+</body>
+</html>

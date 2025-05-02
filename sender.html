@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        /* Style for buttons */
+        .button {
+            display: inline-block;
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            text-decoration: none;
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            margin: 20px 10px;
+        }
+
+        .approve-button {
+            background-color: #28a745; /* Green for Approve */
+        }
+
+        .reject-button {
+            background-color: #dc3545; /* Red for Reject */
+        }
+
+        p {
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+<p>Dear User,</p>
+<p>
+    Please review and take action on the verification request by clicking one of the buttons below:
+</p>
+
+<!-- Approve Button -->
+<a
+        href="mailto:sender@example.com?subject=APPROVE-[REPLY_ID]&body=Please provide your comments below:%0D%0A%0D%0AComments:[[ ]]%0D%0A"
+        class="button approve-button"
+>
+    Approve
+</a>
+
+<!-- Reject Button -->
+<a
+        href="mailto:sender@example.com?subject=REJECT-[REPLY_ID]&body=Please provide your comments below:%0D%0A%0D%0AComments:[[ ]]%0D%0A"
+        class="button reject-button"
+>
+    Reject
+</a>
+
+<p>
+    Thank you for your prompt response.
+    <br>
+    Best regards, <br>
+    Your Team
+</p>
+</body>
+</html>
+
+<!--
+To: sender@example.com
+Subject: REJECT-XyZ123AbC
+Body:
+Please provide your comments below:
+
+Comments:[[ ]]
+-->
