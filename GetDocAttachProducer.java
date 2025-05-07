@@ -9,12 +9,11 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URL;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpHeaders;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -25,7 +24,6 @@ public class GetDocAttachProducer extends DefaultProducer {
     public GetDocAttachProducer(Endpoint endpoint) {
         super(endpoint);
     }
-
 
     @Override
     public void process(Exchange exchange) throws Exception {
@@ -38,7 +36,7 @@ public class GetDocAttachProducer extends DefaultProducer {
                 endpoint.getApiHost(), endpoint.getTenantName(), endpoint.getFormName(), endpoint.getSubmissionId()
         );
 
-        // Log API call info
+        // Log API call information
         LOGGER.info("Calling API: {}", apiUrl);
 
         // Create an HttpClient instance
@@ -64,7 +62,16 @@ public class GetDocAttachProducer extends DefaultProducer {
             throw new RuntimeException("Failed to download document. HTTP response code: " + response.statusCode());
         }
 
-        // Read the response stream
+        // Extract the filename from Content-Disposition header, if available
+        HttpHeaders headers = response.headers();
+        String contentDisposition = headers.firstValue("Content-Disposition").orElse("");
+        String fileName = extractFileNameFromContentDisposition(contentDisposition);
+
+        // If no filename is available in the response header, use a default
+        if (fileName == null || fileName.isBlank()) {
+            fileName = "exportedDocument_" + System.currentTimeMillis() + ".zip"; // Default name
+        }
+
         InputStream inputStream = response.body();
         FileOutputStream fileOutputStream = null;
 
@@ -78,27 +85,26 @@ public class GetDocAttachProducer extends DefaultProducer {
                 throw new RuntimeException("Failed to create save folder: " + saveFolder.getAbsolutePath());
             }
 
-            // Specify file path including the new folder
-            String fileName = "exportedDocument_" + System.currentTimeMillis() + ".pdf"; // Customize file name as needed
+            // Prepare the output file with the filename
             File outputFile = new File(saveFolder, fileName);
             fileOutputStream = new FileOutputStream(outputFile);
 
-            // Write the input stream (document content) to a file
+            // Write the response stream (ZIP content) directly to the file
             byte[] buffer = new byte[1024];
             int bytesRead;
             while ((bytesRead = inputStream.read(buffer)) != -1) {
                 fileOutputStream.write(buffer, 0, bytesRead);
             }
 
-            LOGGER.info("Document downloaded successfully and saved to: {}", outputFile.getAbsolutePath());
+            LOGGER.info("Document (ZIP) downloaded successfully and saved to: {}", outputFile.getAbsolutePath());
 
-            // Add the document file path to the exchange in a Map
+            // Add the document ZIP file path to the Exchange in a Map
             Map<String, String> resultMap = new HashMap<>();
-            resultMap.put("docFilePath", outputFile.getAbsolutePath());
+            resultMap.put("docFilePath", outputFile.getAbsolutePath()); // Returning the ZIP file path
             exchange.getIn().setBody(resultMap);
 
         } catch (Exception ex) {
-            LOGGER.error("Error occurred while downloading and saving the document.", ex);
+            LOGGER.error("An error occurred while downloading and saving the document.", ex);
             throw ex;
         } finally {
             // Close all resources
@@ -109,5 +115,16 @@ public class GetDocAttachProducer extends DefaultProducer {
                 fileOutputStream.close();
             }
         }
+    }
+
+
+    private String extractFileNameFromContentDisposition(String contentDisposition) {
+        if (contentDisposition != null && contentDisposition.contains("filename=")) {
+            String[] parts = contentDisposition.split("filename=");
+            if (parts.length > 1) {
+                return parts[1].replace("\"", "").trim();
+            }
+        }
+        return null;
     }
 }
