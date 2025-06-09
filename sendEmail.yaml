@@ -1,57 +1,148 @@
-apiVersion: camel.apache.org/v1
-kind: Integration
+apiVersion: camel.apache.org/v1alpha1
+kind: Kamelet
 metadata:
-name: send-html-email
+  name: send-html-email
+  annotations:
+    camel.apache.org/kamelet.icon: "file:email.png"
 spec:
-replicas: 1
-sources:
-  - name: send-email-route.yaml
-content: |
-  - from:
-uri: "direct:sendEmail"
-steps:
-  # Set email headers dynamically using placeholders
-  - setHeader:
-name: from
-simple: "{{email.from}}" # Placeholder for 'from' address
-  - setHeader:
-name: to
-simple: "{{email.to}}" # Placeholder for 'to' address
-  - setHeader:
-name: cc
-simple: "{{email.cc}}" # Placeholder for 'cc' address
-  - setHeader:
-name: bcc
-simple: "{{email.bcc}}" # Placeholder for 'bcc' address
-  - setHeader:
-name: subject
-simple: "{{email.subject}}" # Placeholder for 'subject'
+  definition:
+    title: "Send HTML Email"
+    description: >
+      A Kamelet to send dynamically templated HTML emails using SMTP.
+      It supports both plain HTML templates with placeholders and Thymeleaf templates.
+    properties:
+      emailFrom:
+        title: From Address
+        description: The email address to send emails from.
+        type: string
+      emailTo:
+        title: To Address
+        description: The recipient's email address.
+        type: string
+      emailCc:
+        title: CC Address
+        description: Optional. The CC email address.
+        type: string
+        default: ""
+      emailBcc:
+        title: BCC Address
+        description: Optional. The BCC email address.
+        type: string
+        default: ""
+      emailSubject:
+        title: Email Subject
+        description: The subject of the email.
+        type: string
+      smtpHost:
+        title: SMTP Host
+        description: The hostname of the SMTP server.
+        type: string
+      smtpPort:
+        title: SMTP Port
+        description: The SMTP server port.
+        default: 587
+        type: integer
+      smtpUsername:
+        title: SMTP Username
+        description: The username for the SMTP server.
+        type: string
+        default: ""
+      smtpPassword:
+        title: SMTP Password
+        description: The password for the SMTP server.
+        type: string
+        format: password
+      templateType:
+        title: Template Type
+        description: Define whether the template is plain HTML or Thymeleaf.
+        type: string
+        enum:
+          - html
+          - thymeleaf
+        default: "html"
+      templatePath:
+        title: Template Path
+        description: The path to the HTML or Thymeleaf template file.
+        type: string
+      placeholders:
+        title: Data Placeholders
+        description: >
+          A JSON object containing key-value pairs for placeholders within the template.
+          Example:
+          {
+            "userName": "John Doe",
+            "accountStatus": "Active",
+            "emailSignature": "Best regards, Support Team"
+          }
+        type: object
+        example:
+          userName: "John Doe"
+          accountStatus: "Active"
+          emailSignature: "Best regards, Support Team"
+  flow:
+    from:
+      uri: "kamelet:source"
+      steps:
+        # Step 1: Set email headers dynamically
+        - setHeader:
+            name: from
+            simple: "{{emailFrom}}"
+        - setHeader:
+            name: to
+            simple: "{{emailTo}}"
+        - setHeader:
+            name: cc
+            simple: "{{emailCc}}"
+        - setHeader:
+            name: bcc
+            simple: "{{emailBcc}}"
+        - setHeader:
+            name: subject
+            simple: "{{emailSubject}}"
 
-  # Load and process HTML template dynamically (Thymeleaf or plain HTML)
-  - to:
-uri: "file:{{template.path}}" # Placeholder for the path to your HTML template file
-  - convertBodyTo:
-type: java.lang.String
-  
-  # Replace placeholders in the HTML template dynamically
-  - setBody:
-simple: |
-  ${body.replaceAll('\\{\\{userName\\}\\}', '{{userName}}')
-  .replaceAll('\\{\\{accountStatus\\}\\}', '{{accountStatus}}')
-  .replaceAll('\\{\\{emailSignature\\}\\}', '{{emailSignature}}')}
+        # Step 2: Dynamically load the email template from the specified path
+        - choice:
+            when:
+              # Plain HTML template
+              - simple: "{{templateType}} == 'html'"
+                steps:
+                  - toD: "file:{{templatePath}}?charset=utf-8" # Load plain HTML file dynamically
+                  - convertBodyTo:
+                      type: java.lang.String
+                  - setBody:
+                      simple: |
+                        # Replace placeholders with the actual values
+                        ${body
+                         .replaceAll('\\{\\{userName\\}\\}', '${headers.userName}')
+                         .replaceAll('\\{\\{accountStatus\\}\\}', '${headers.accountStatus}')
+                         .replaceAll('\\{\\{emailSignature\\}\\}', '${headers.emailSignature}')}
 
-# Send the email using SMTP
-- to:
-uri: "smtp://{{smtp.host}}:{{smtp.port}}"
-parameters:
-username: "{{smtp.username}}"
-password: "{{smtp.password}}"
+              # Thymeleaf template processing
+              - simple: "{{templateType}} == 'thymeleaf'"
+                steps:
+                  - toD: "file:{{templatePath}}?charset=utf-8" # Load template
+                  - convertBodyTo:
+                      type: java.lang.String
+                  - to: "thymeleaf:dummy" # Process Thymeleaf template with dynamic headers
 
-  # Handle exceptions and log errors
-  - onException:
-exception: java.lang.Exception
-steps:
-  - log:
-message: "Error while sending email: ${exception.message}"
-  - to:
-uri: "log:?level=ERROR"
+        # Step 3: Send the email using SMTP protocol
+        - to:
+            uri: "smtp://{{smtpHost}}:{{smtpPort}}"
+            parameters:
+              username: "{{smtpUsername}}"
+              password: "{{smtpPassword}}"
+
+        # Step 4: Handle any errors and provide fallback logic
+        - onException:
+            exception: java.lang.Exception
+            steps:
+              - log:
+                  message: "Error occurred while sending email: ${exception.message}"
+                  loggingLevel: ERROR
+              - to:
+                  uri: "log:?level=ERROR"
+
+        # Log successful message delivery
+        - log:
+            message: "Email sent successfully to: {{emailTo}}"
+            loggingLevel: INFO
