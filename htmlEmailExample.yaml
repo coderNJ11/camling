@@ -1,0 +1,30 @@
+apiVersion: camel.apache.org/v1
+kind: Integration
+metadata:
+  name: send-html-email-example
+spec:
+  replicas: 1
+  sources:
+    - name: send-email-route.yaml
+      content: |
+        - from:
+            uri: "direct:start"
+            steps:
+              - to:
+                  uri: "kamelet:send-html-email"
+                  parameters:
+                    emailFrom: "sender@example.com"
+                    emailTo: "recipient@example.com"
+                    emailSubject: "Welcome to Our Service!"
+                    smtpHost: "smtp.example.com"
+                    smtpPort: "587"
+                    smtpUsername: "smtp_user"
+                    smtpPassword: "smtp_password"
+                    templateType: "html"
+                    templatePath: "/templates/welcome-email.html"
+                    placeholders: >
+                      {
+                        "userName": "John Doe",
+                        "accountStatus": "Active",
+                        "emailSignature": "Best regards, Support Team"
+                      }

@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: send-email-job
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: send-email
+  template:
+    metadata:
+      labels:
+        app: send-email
+    spec:
+      containers:
+        - name: send-email
+          image: apache/camel-k:latest
+          env:
+            - name: email.from
+              value: "support@example.com"
+            - name: email.to
+              value: "user@example.com"
+            - name: email.cc
+              value: "manager@example.com"
+            - name: email.bcc
+              value: "admin@example.com"
+            - name: email.subject
+              value: "Welcome to Our Service"
+            - name: template.path
+              value: "/templates/email-template.html"
+            - name: smtp.host
+              value: "smtp.example.com"
+            - name: smtp.port
+              value: "587"
+            - name: smtp.username
+              value: "your-username"
+            - name: smtp.password
+              value: "your-password"
+            - name: userName
+              value: "John Doe"
+            - name: accountStatus
+              value: "active"
+            - name: emailSignature
+              value: "Best regards,<br/>The Support Team"

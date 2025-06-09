@@ -1,0 +1,29 @@
+headersValidationRules:
+  Authorization:
+    type: exact
+    value: "Bearer abc123" # Exact match for a header value
+  Content-Type:
+    type: regex
+    value: "^application/.*$" # Regex match to check for content-types like "application/json"
+  X-Custom-Header:
+    type: null # Null check to ensure the header is present
+  X-Request-ID:
+    type: empty # Empty check to ensure the header isn't blank
+  X-Trace-Info:
+    type: substring
+    value: "session-" # Substring match to ensure the header contains "session-"
+
+bodyValidationRules:
+  user.name:
+    type: null # Null check for the field "user.name"
+  user.email:
+    type: exact
+    value: "user@example.com" # Exact match for "user.email"
+  user.role:
+    type: substring
+    value: "admin" # Ensure "user.role" contains "admin"
+  user.status:
+    type: regex
+    value: "^(active|pending|inactive)$" # Regex match to validate "user.status"
+  user.preferences.language:
+    type: empty # Empty check for "user.preferences.language"

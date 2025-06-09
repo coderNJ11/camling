@@ -1,0 +1,203 @@
+apiVersion: camel.apache.org/v1alpha1
+kind: Kamelet
+metadata:
+  name: validate-headers-and-body
+  annotations:
+    camel.apache.org/kamelet.icon: "file:placeholder.png"
+spec:
+  definition:
+    title: "Validate Headers and Body Fields"
+    description: >
+      A customizable Kamelet to validate HTTP headers and body fields. It supports:
+      - Null check
+      - Empty check
+      - Exact match
+      - Regex match
+      - Substring match
+    properties:
+      headersValidationRules:
+        title: "Headers Validation Rules"
+        description: >
+          A map of validation rules for headers.
+          The value is an object specifying:
+          - type: Type of validation (null, empty, exact, regex, or substring)
+          - value: Optional value for exact, regex, or substring match
+        type: object
+        additionalProperties:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - null
+                - empty
+                - exact
+                - regex
+                - substring
+            value:
+              type: string
+        example:
+          Authorization:
+            type: exact
+            value: "Bearer abc123"
+          Content-Type:
+            type: regex
+            value: "application/json"
+          X-Custom-Header:
+            type: null
+      bodyValidationRules:
+        title: "Body Validation Rules"
+        description: >
+          A map of validation rules for body fields (dot notation supported).
+          The value is an object specifying:
+          - type: Type of validation (null, empty, exact, regex, or substring)
+          - value: Optional value for exact, regex, or substring match
+        type: object
+        additionalProperties:
+          type: object
+          properties:
+            type:
+              type: string
+              enum:
+                - null
+                - empty
+                - exact
+                - regex
+                - substring
+            value:
+              type: string
+        example:
+          user.name:
+            type: null
+          user.email:
+            type: exact
+            value: "user@example.com"
+          user.role:
+            type: substring
+            value: "admin"
+  flow:
+    from:
+      uri: "kamelet:source"
+      steps:
+        # Step 1: Validate Headers
+        - choice:
+            when:
+              - simple: "{{#headersValidationRules}} != null"
+                steps:
+                  - setProperty:
+                      name: headersValidationRules
+                      constant: "{{headersValidationRules}}"
+                  - loop:
+                      simple: "${exchangeProperty.headersValidationRules.entrySet()}"
+                      steps:
+                        - setProperty:
+                            name: headerName
+                            simple: "${header.key}"
+                        - setProperty:
+                            name: headerRuleType
+                            simple: "${header.value['type']}"
+                        - setProperty:
+                            name: headerExpectedValue
+                            simple: "${header.value['value']}"
+                        - choice:
+                            # Null Check
+                            when:
+                              - simple: "${exchangeProperty.headerRuleType} == 'null' && ${headers[${exchangeProperty.headerName}]} == null"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Missing header: ${exchangeProperty.headerName}"
+                              # Empty Check
+                              - simple: "${exchangeProperty.headerRuleType} == 'empty' && ${headers[${exchangeProperty.headerName}]}?.trim() == ''"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Empty header: ${exchangeProperty.headerName}"
+                              # Exact Match
+                              - simple: "${exchangeProperty.headerRuleType} == 'exact' && ${headers[${exchangeProperty.headerName}]} != ${exchangeProperty.headerExpectedValue}"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Header '${exchangeProperty.headerName}' does not match exact value (got: ${headers[${exchangeProperty.headerName}]})"
+                              # Regex Match
+                              - simple: "${exchangeProperty.headerRuleType} == 'regex' && !(${headers[${exchangeProperty.headerName}]} matches ${exchangeProperty.headerExpectedValue})"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Header '${exchangeProperty.headerName}' does not match regex: ${exchangeProperty.headerExpectedValue}"
+                              # Substring Match
+                              - simple: "${exchangeProperty.headerRuleType} == 'substring' && !(${headers[${exchangeProperty.headerName}]} contains ${exchangeProperty.headerExpectedValue})"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Header '${exchangeProperty.headerName}' does not contain expected value: ${exchangeProperty.headerExpectedValue}"
+
+        # Step 2: Validate Body Fields
+        - choice:
+            when:
+              - simple: "{{#bodyValidationRules}} != null"
+                steps:
+                  - setProperty:
+                      name: bodyValidationRules
+                      constant: "{{bodyValidationRules}}"
+                  - loop:
+                      simple: "${exchangeProperty.bodyValidationRules.entrySet()}"
+                      steps:
+                        - setProperty:
+                            name: fieldName
+                            simple: "${header.key}"
+                        - setProperty:
+                            name: fieldRuleType
+                            simple: "${header.value['type']}"
+                        - setProperty:
+                            name: fieldExpectedValue
+                            simple: "${header.value['value']}"
+                        - choice:
+                            # Null Check
+                            when:
+                              - simple: "${exchangeProperty.fieldRuleType} == 'null' && ${body[${exchangeProperty.fieldName}]} == null"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Missing body field: ${exchangeProperty.fieldName}"
+                              # Empty Check
+                              - simple: "${exchangeProperty.fieldRuleType} == 'empty' && ${body[${exchangeProperty.fieldName}]}?.trim() == ''"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Empty body field: ${exchangeProperty.fieldName}"
+                              # Exact Match
+                              - simple: "${exchangeProperty.fieldRuleType} == 'exact' && ${body[${exchangeProperty.fieldName}]} != ${exchangeProperty.fieldExpectedValue}"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Body field '${exchangeProperty.fieldName}' does not match exact value (got: ${body[${exchangeProperty.fieldName}]})"
+                              # Regex Match
+                              - simple: "${exchangeProperty.fieldRuleType} == 'regex' && !(${body[${exchangeProperty.fieldName}]} matches ${exchangeProperty.fieldExpectedValue})"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Body field '${exchangeProperty.fieldName}' does not match regex: ${exchangeProperty.fieldExpectedValue}"
+                              # Substring Match
+                              - simple: "${exchangeProperty.fieldRuleType} == 'substring' && !(${body[${exchangeProperty.fieldName}]} contains ${exchangeProperty.fieldExpectedValue})"
+                                steps:
+                                  - setProperty:
+                                      name: validationErrors
+                                      simple: "${exchangeProperty.validationErrors}, Body field '${exchangeProperty.fieldName}' does not contain expected value: ${exchangeProperty.fieldExpectedValue}"
+
+        # Throw an Exception if Any Validation Errors Occur
+        - choice:
+            when:
+              - simple: "${exchangeProperty.validationErrors?.length()} > 0"
+                steps:
+                  - log:
+                      message: "Validation errors occurred: ${exchangeProperty.validationErrors}"
+                      loggingLevel: ERROR
+                  - throwException:
+                      exceptionType: java.lang.Exception
+                      message: "Validation failed: ${exchangeProperty.validationErrors}"
+
+        # Log Success
+        - log:
+            message: "Validation Successful!"
+            loggingLevel: INFO

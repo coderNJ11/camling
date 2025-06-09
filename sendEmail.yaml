@@ -1,0 +1,57 @@
+apiVersion: camel.apache.org/v1
+kind: Integration
+metadata:
+name: send-html-email
+spec:
+replicas: 1
+sources:
+  - name: send-email-route.yaml
+content: |
+  - from:
+uri: "direct:sendEmail"
+steps:
+  # Set email headers dynamically using placeholders
+  - setHeader:
+name: from
+simple: "{{email.from}}" # Placeholder for 'from' address
+  - setHeader:
+name: to
+simple: "{{email.to}}" # Placeholder for 'to' address
+  - setHeader:
+name: cc
+simple: "{{email.cc}}" # Placeholder for 'cc' address
+  - setHeader:
+name: bcc
+simple: "{{email.bcc}}" # Placeholder for 'bcc' address
+  - setHeader:
+name: subject
+simple: "{{email.subject}}" # Placeholder for 'subject'
+
+  # Load and process HTML template dynamically (Thymeleaf or plain HTML)
+  - to:
+uri: "file:{{template.path}}" # Placeholder for the path to your HTML template file
+  - convertBodyTo:
+type: java.lang.String
+  
+  # Replace placeholders in the HTML template dynamically
+  - setBody:
+simple: |
+  ${body.replaceAll('\\{\\{userName\\}\\}', '{{userName}}')
+  .replaceAll('\\{\\{accountStatus\\}\\}', '{{accountStatus}}')
+  .replaceAll('\\{\\{emailSignature\\}\\}', '{{emailSignature}}')}
+
+# Send the email using SMTP
+- to:
+uri: "smtp://{{smtp.host}}:{{smtp.port}}"
+parameters:
+username: "{{smtp.username}}"
+password: "{{smtp.password}}"
+
+  # Handle exceptions and log errors
+  - onException:
+exception: java.lang.Exception
+steps:
+  - log:
+message: "Error while sending email: ${exception.message}"
+  - to:
+uri: "log:?level=ERROR"
